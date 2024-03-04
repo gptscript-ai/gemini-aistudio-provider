@@ -1,4 +1,6 @@
+import base64
 import os
+import tempfile
 import uuid
 from typing import AsyncIterable, Iterable, List, Optional
 
@@ -52,6 +54,71 @@ class Function(BaseModel):
 class OAITool(BaseModel):
     type: str
     function: Function
+
+
+class BetaOAIParameters(BaseModel):
+    type: str
+    properties: dict | None = None
+    required: list[str] | None = None
+
+
+class BetaOAIFunction(BaseModel):
+    name: str
+    description: str
+    parameters: BetaOAIParameters
+
+
+class BetaOAITool(BaseModel):
+    type: str | str = "function"
+    function: BetaOAIFunction
+
+
+class BetaGeminiParameters(BaseModel):
+    type: str
+    properties: dict | None = None
+    required: list[str] | None = None
+
+
+class BetaGeminiFunction(BaseModel):
+    name: str
+    description: str
+    parameters: BetaGeminiParameters
+
+    def convert_to_sdk_function_declaration(self) -> FunctionDeclaration:
+        return FunctionDeclaration(
+            name=self.name,
+            description=self.description,
+            parameters=self.parameters.dict()
+        )
+
+
+class BetaGeminiTool(BaseModel):
+    function_declarations: list[BetaGeminiFunction] | None = None
+
+    def convert_to_sdk_tool(self) -> Tool:
+        functions: list[FunctionDeclaration] = []
+        for function in self.function_declarations:
+            functions.append(function.convert_to_sdk_function_declaration())
+        return Tool(functions)
+
+
+def map_oai_to_gemini_function(oai_function: BetaOAIFunction) -> BetaGeminiFunction:
+    return BetaGeminiFunction(
+        name=oai_function.name,
+        description=oai_function.description,
+        parameters=BetaGeminiParameters(
+            type=oai_function.parameters.type,
+            properties=oai_function.parameters.properties
+        )
+    )
+
+
+def map_gemini_to_oai_function(gemini_function: BetaGeminiFunction) -> BetaOAIFunction:
+    oai_function = BetaOAIFunction()
+    oai_function.name = gemini_function.name
+    oai_function.description = gemini_function.description
+    oai_function.parameters = gemini_function.parameters
+    return oai_function
 
 
 class OAICompletionRequest(BaseModel):
@@ -118,8 +185,35 @@ class OAICompletionResponse(BaseModel):
     usage: Usage | None = None
 
 
+def init_cache_dir() -> str:
+    tmp = tempfile.mkdtemp()
+    print(type(tmp))
+    return tmp
+
+
+cache_dir = init_cache_dir()
+
+
+def put_cache(dir: str, key: str, value: str) -> str:
+    path = os.path.join(dir, key)
+    with open(path, "w") as f:
+        f.write(str(value))
+    return path
+
+
+def get_cache(path: str) -> str:
+    with open(path) as f:
+        return f.read()
+
+
+def calculate_cache_key(value: str) -> str:
+    value = bytes(value, 'utf-8')
+    value = base64.urlsafe_b64encode(value)
+    return str(value)
+
+
 @app.get("/models")
-def list_models():
+def list_models() -> JSONResponse:
     models = []
     for model in genai.list_models():
         model = openai.types.Model(id=model.name.removeprefix("models/"), created=0, object="model", owned_by="system")
@@ -132,36 +226,104 @@ def list_models():
 
 @app.post("/chat/completions", response_model_exclude_none=True, response_model_exclude_unset=True,
           response_model=OAICompletionResponse)
-async def chat_completion(data: OAICompletionRequest):
+async def chat_completion(request: Request, data: OAICompletionRequest):
+    print("REQUESTBODY: ", await request.body())
+
     # print("GPTSCRIPT INPUT: ", data)
+    gemini_tools: list[Tool] | None = None
     if data.tools is not None:
-        gtool_func_declarations = []
+        gemini_functions: list[BetaGeminiFunction] = []
         for tool in data.tools:
-            gtool_func_declaration = FunctionDeclaration(
-                name=tool.function.name,
-                description=tool.function.description,
-                parameters=tool.function.parameters
+            # TODO: REMOVE THIS MAPPING
+            tool = BetaOAITool(
+                type=tool.type,
+                function=BetaOAIFunction(
+                    name=tool.function.name,
+                    description=tool.function.description,
+                    parameters=BetaOAIParameters(
+                        type=tool.function.parameters["type"],
+                        properties=tool.function.parameters["properties"],
+                    )
+                )
             )
+            gemini_function = map_oai_to_gemini_function(tool.function)
+            gemini_functions.append(gemini_function)
 
-            gtool_func_declarations.append(gtool_func_declaration)
-        tools = [
-            Tool(gtool_func_declarations)
-        ]
-    else:
-        tools = None
+        gemini_tools = [BetaGeminiTool(function_declarations=gemini_functions).convert_to_sdk_tool()]
 
-    parts = []
-    for item in data.messages:
-        part = Part.from_text(item.content)
-        parts.append(part)
-    content = Content(
-        role='user',
-        parts=parts
-    )
+        # gtool_func_declarations = []
+        # for tool in data.tools:
+        #     gtool_func_declaration = FunctionDeclaration(
+        #         name=tool.function.name,
+        #         description=tool.function.description,
+        #         parameters=tool.function.parameters
+        #     )
+        #
+        #     gtool_func_declarations.append(gtool_func_declaration)
+        # tools = [
+        #     Tool(gtool_func_declarations)
+        # ]
 
-    model = GenerativeModel("gemini-pro", tools=tools)
+    user_parts: list[Part] = []
+    model_parts: list[Part] = []
+    function_parts: list[Part] = []
+
+    for message in data.messages:
+        part = Part.from_text(message.content)
+        role: str
+        match message.role:
+            case "system":
+                role = "user"
+            case "user":
+                role = "user"
+            case "assistant":
+                role = "model"
+            case "model":
+                role = "model"
+            case "tool":
+                role = "function"
+            case _:
+                role = "user"
+
+        match role:
+            case "user":
+                user_parts.append(part)
+            case "model":
+                model_parts.append(part)
+            case "function":
+                function_parts.append(part)
+
+    all_content: list[Content] = []
+
+    if user_parts:
+        all_content.append(Content(
+            role="user",
+            parts=user_parts
+        ))
+
+    if model_parts:
+        all_content.append(Content(
+            role="model",
+            parts=model_parts
+        ))
+
+    if function_parts:
+        all_content.append(Content(
+            # role="model",
+            # API says this isn't a valid option?
+            role="function",
+            parts=function_parts
+        ))
+
+    print("ALL CONTENT: ", all_content)
+
+    # print("PARTS IN GEMINI FORMAT: ", content)
+    # print("TOOLS IN GEMINI FORMAT: ", tools)
+    # return {}
+
+    model = GenerativeModel("gemini-pro", tools=gemini_tools)
     print("CALLING GENERATE CONTENT")
-    response = model.generate_content([content], tools=tools, stream=data.stream)
+    response = model.generate_content(all_content, tools=gemini_tools, stream=data.stream)
 
     return StreamingResponse(async_chunk(response), media_type="application/x-ndjson")
     # return JSONResponse(content=response_json)
@@ -175,8 +337,8 @@ async def async_chunk(chunks: Iterable[GenerationResponse]) -> AsyncIterable[str
         yield "data: " + chunk.json() + "\n\n"
 
 
-def _generate_id():  # private helper function
-    return "chatcmpl-" + str(uuid.uuid4())
+def generate_id(type: str = "chatcmpl") -> str:
+    return type + "-" + str(uuid.uuid4())
 
 
 def map_gemini_resp(response: GenerationResponse) -> OAICompletionResponse:
@@ -184,24 +346,18 @@ def map_gemini_resp(response: GenerationResponse) -> OAICompletionResponse:
     print("PRINTING GEMINI RESPONSE AS DICT: ", response.to_dict())
     response = response.to_dict()
     for idx, item in enumerate(response["candidates"]):
-        # print("ITEM: ", item)
-        # tool_calls = [
-        #     {
-        #         "id": "some_thing",  # only on initial tool call?
-        #         "index": idx,
-        #         "type": "function_call",  # only on initial tool call?
-        #         "function": {
-        #             "name": item["content"]["parts"][0]["function_call"]["name"],
-        #             "arguments": item["content"]["parts"][0]["function_call"]["args"]["question"]
-        #         }
-        #     }
-        # ]
-        # print("MAPPED TOOL CALLS: ", tool_calls)
+        try:
+            cache_value = str(jsonable_encoder(item["content"]["parts"][0]["function_call"]))
+            cache_key = calculate_cache_key(cache_value)
+            tool_call_id = put_cache(cache_dir, cache_key, cache_value)
+
+        except KeyError:
+            tool_call_id = None
 
         try:
             tool_calls = [
                 {
-                    "id": "some_thing",  # only on initial tool call?
+                    "id": tool_call_id,  # only on initial tool call?
                     "index": idx,
                     "type": "function",  # only on initial tool call? function_call or function?
                     "function": {
@@ -214,8 +370,7 @@ def map_gemini_resp(response: GenerationResponse) -> OAICompletionResponse:
             tool_calls = None
 
         try:
-            finish_reason = 'continue'
-            # finish_reason = map_finish_reason(item["finish_reason"])
+            finish_reason = map_finish_reason(item["finish_reason"])
         except KeyError:
             finish_reason = None
 
@@ -243,7 +398,7 @@ def map_gemini_resp(response: GenerationResponse) -> OAICompletionResponse:
         choices.append(choice)
 
     return OAICompletionResponse(
-        id=_generate_id(),
+        id=generate_id(),
         choices=choices,
         created=0,
         model="gemini-pro",

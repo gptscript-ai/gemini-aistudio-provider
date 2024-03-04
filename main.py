@@ -1,3 +1,4 @@
+import ast
 import base64
 import os
 import tempfile
@@ -28,10 +29,12 @@ async def log_body(request: Request, call_next):
 class Message(BaseModel):
     role: str
     content: str | None = None
+    tool_call_id: str | None = None
+    tool_calls: list[dict] | None = None
 
 
 class Delta(Message):
-    pass
+    tool_calls: list[dict] | None = None
 
 
 class Question(BaseModel):
@@ -71,6 +74,13 @@ class BetaOAIFunction(BaseModel):
 class BetaOAITool(BaseModel):
     type: str | str = "function"
     function: BetaOAIFunction
+
+
+class BetaOAIToolCall(BetaOAITool):
+    id: str | None = None
+
+    def generate_id(self) -> str:
+        return self.id if self.id else generate_id("call")
 
 
 class BetaGeminiParameters(BaseModel):
@@ -208,8 +218,7 @@ def get_cache(path: str) -> str:
 
 def calculate_cache_key(value: str) -> str:
     value = bytes(value, 'utf-8')
-    value = base64.urlsafe_b64encode(value)
-    return str(value)
+    return base64.urlsafe_b64encode(value).decode('utf-8')
 
 
 @app.get("/models")
@@ -251,25 +260,53 @@ async def chat_completion(request: Request, data: OAICompletionRequest):
 
         gemini_tools = [BetaGeminiTool(function_declarations=gemini_functions).convert_to_sdk_tool()]
 
-        # gtool_func_declarations = []
-        # for tool in data.tools:
-        #     gtool_func_declaration = FunctionDeclaration(
-        #         name=tool.function.name,
-        #         description=tool.function.description,
-        #         parameters=tool.function.parameters
-        #     )
-        #
-        #     gtool_func_declarations.append(gtool_func_declaration)
-        # tools = [
-        #     Tool(gtool_func_declarations)
-        # ]
-
     user_parts: list[Part] = []
     model_parts: list[Part] = []
     function_parts: list[Part] = []
 
     for message in data.messages:
-        part = Part.from_text(message.content)
+        if message.content:
+            part = Part.from_text(message.content)
+            # print("PART FROM TEXT: ", part)
+
+        # print("TOOL CALL ID: ", message.tool_call_id)
+        if message.tool_call_id:
+            decoded_tool_call_id = base64.urlsafe_b64decode(message.tool_call_id).decode('utf-8')
+            cache_value = get_cache(decoded_tool_call_id)
+            print("CACHE VALUE: ", cache_value)
+            value = ast.literal_eval(cache_value)
+            part = Part.from_function_response(name=value["name"],
+                                               response={
+                                                   "name": value["name"],
+                                                   "content": message.content
+                                               })
+            # part = Part.from_function_response(name=value["name"],
+            #                                    response={
+            #                                        "name": value["name"],
+            #                                        "content": str(value["args"])
+            #                                    })
+            # print("PART FROM FUNCTION_RESPONSE: ", part)
+
+        if message.tool_calls:
+            for tool_call in message.tool_calls:
+                # role for these should always be 'model'
+                print("IN TOOL CALL, PRINT ARGS: ", ast.literal_eval(tool_call["function"]["arguments"]))
+                part = Part.from_dict({
+                    "function_call": {
+                        "name": tool_call["function"]["name"],
+                        # "args": ast.literal_eval(tool_call["function"]["arguments"])
+                        "args": {
+                            "fields": {
+                                "key": "question",
+                                "value": {
+                                    "string_value": "how are you?"
+                                }
+                            }
+                        }
+                    }
+                }
+                )
+
         role: str
         match message.role:
             case "system":
@@ -309,17 +346,11 @@ async def chat_completion(request: Request, data: OAICompletionRequest):
 
     if function_parts:
         all_content.append(Content(
-            # role="model",
-            # API says this isn't a valid option?
             role="function",
             parts=function_parts
         ))
 
     print("ALL CONTENT: ", all_content)
-
-    # print("PARTS IN GEMINI FORMAT: ", content)
-    # print("TOOLS IN GEMINI FORMAT: ", tools)
-    # return {}
 
     model = GenerativeModel("gemini-pro", tools=gemini_tools)
     print("CALLING GENERATE CONTENT")
@@ -333,7 +364,7 @@ async def async_chunk(chunks: Iterable[GenerationResponse]) -> AsyncIterable[str
     # print("CHUNKS FROM GEMINI: ")
     for chunk in chunks:
         #         print(chunk)
-        chunk = map_gemini_resp(chunk)
+        chunk = map_gemini_to_oai_response(chunk)
         yield "data: " + chunk.json() + "\n\n"
 
 
@@ -341,7 +372,7 @@ def generate_id(type: str = "chatcmpl") -> str:
     return type + "-" + str(uuid.uuid4())
 
 
-def map_gemini_resp(response: GenerationResponse) -> OAICompletionResponse:
+def map_gemini_to_oai_response(response: GenerationResponse) -> OAICompletionResponse:
     choices = []
     print("PRINTING GEMINI RESPONSE AS DICT: ", response.to_dict())
     response = response.to_dict()
@@ -349,24 +380,30 @@ def map_gemini_resp(response: GenerationResponse) -> OAICompletionResponse:
         try:
             cache_value = str(jsonable_encoder(item["content"]["parts"][0]["function_call"]))
             cache_key = calculate_cache_key(cache_value)
-            tool_call_id = put_cache(cache_dir, cache_key, cache_value)
+            tool_call_id = base64.urlsafe_b64encode(
+                bytes(put_cache(cache_dir, cache_key, cache_value), 'utf-8')).decode('utf-8')
+            print("TEST TOOL CALL ID: ", tool_call_id)
 
         except KeyError:
             tool_call_id = None
+
+        # print("FUNCTION NAME: ", item["content"]["parts"][idx]["function_call"]["name"])
+        # print("FUNCTION ARGS: ", item["content"]["parts"][idx]["function_call"]["args"])
 
         try:
             tool_calls = [
                 {
                     "id": tool_call_id,  # only on initial tool call?
                     "index": idx,
-                    "type": "function",  # only on initial tool call? function_call or function?
+                    "type": "function",
                     "function": {
-                        "name": item["content"]["parts"][0]["function_call"]["name"],
-                        "arguments": item["content"]["parts"][0]["function_call"]["question"]
+                        "name": item["content"]["parts"][idx]["function_call"]["name"],
+                        "arguments": str(jsonable_encoder(item["content"]["parts"][idx]["function_call"]["args"]))
                     }
                 }
             ]
         except:
+            print("NO TOOL CALLS DETECTED IN RESPONSE")
             tool_calls = None
 
         try:
@@ -379,12 +416,15 @@ def map_gemini_resp(response: GenerationResponse) -> OAICompletionResponse:
         except KeyError:
             content = None
 
+        # print("TOOL CALLS: ", tool_calls)
+
         choice = RespChoice(
             finish_reason=finish_reason,
             index=idx,
             delta=Delta(
                 role=item["content"]["role"],
-                content=content
+                content=content,
+                tool_calls=tool_calls
             ),
             logprobs=Logprobs(
                 content=[
@@ -397,6 +437,7 @@ def map_gemini_resp(response: GenerationResponse) -> OAICompletionResponse:
         )
         choices.append(choice)
 
+    # print("CHOICES: ", choices)
     return OAICompletionResponse(
         id=generate_id(),
         choices=choices,
@@ -425,5 +466,7 @@ def map_finish_reason(finish_reason: str) -> str:
     elif finish_reason == "STOP":  # vertex ai
         return "stop"
     elif finish_reason == 1:  # vertex ai
+        return "stop"
+    elif finish_reason == 0:  # vertex ai
         return "stop"
     return finish_reason

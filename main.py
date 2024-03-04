@@ -12,7 +12,8 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.routing import APIRouter
 from pydantic import BaseModel
-from vertexai.generative_models import (Content, FunctionDeclaration, GenerationResponse, GenerativeModel, Part, Tool)
+from vertexai.generative_models import (Content, FunctionDeclaration, GenerationConfig, GenerationResponse,
+                                        GenerativeModel, Part, Tool)
 
 app = FastAPI()
 router = APIRouter()
@@ -139,6 +140,9 @@ class OAICompletionRequest(BaseModel):
     seed: float | None = None
     tools: List[OAITool] | None = None
     tool_choice: List[OAITool] | Optional[str] | None = None
+    top_k: int | None = None
+    top_p: float | None = None
+    temperature: float | None = None
 
 
 class TopLogprob(BaseModel):
@@ -193,6 +197,7 @@ class OAICompletionResponse(BaseModel):
     system_fingerprint: str
     object: str
     usage: Usage | None = None
+    temperature: float | None = None
 
 
 def init_cache_dir() -> str:
@@ -291,18 +296,26 @@ async def chat_completion(request: Request, data: OAICompletionRequest):
             for tool_call in message.tool_calls:
                 # role for these should always be 'model'
                 print("IN TOOL CALL, PRINT ARGS: ", ast.literal_eval(tool_call["function"]["arguments"]))
+
+                args: dict = {"fields": {}}
+                for key, value in ast.literal_eval(tool_call["function"]["arguments"]):
+                    args["fields"]["key"] = key
+                    args["fields"]["value"] = {"number_value": value}
+
                 part = Part.from_dict({
                     "function_call": {
                         "name": tool_call["function"]["name"],
+                        "args": args
                         # "args": ast.literal_eval(tool_call["function"]["arguments"])
-                        "args": {
-                            "fields": {
-                                "key": "question",
-                                "value": {
-                                    "string_value": "how are you?"
-                                }
-                            }
-                        }
+                        # "args": {
+                        #     # "question": "how are you?"
+                        #     "fields": {
+                        #         "key": "number",
+                        #         "value": {
+                        #             "number_value": 3
+                        #         }
+                        #     }
+                        # }
                     }
                 }
                 )
@@ -354,7 +367,13 @@ async def chat_completion(request: Request, data: OAICompletionRequest):
 
     model = GenerativeModel("gemini-pro", tools=gemini_tools)
     print("CALLING GENERATE CONTENT")
-    response = model.generate_content(all_content, tools=gemini_tools, stream=data.stream)
+    response = model.generate_content(all_content, tools=gemini_tools, stream=data.stream,
+                                      generation_config=GenerationConfig(
+                                          temperature=data.temperature,
+                                          top_k=data.top_k,
+                                          top_p=data.top_p,
+                                          max_output_tokens=data.max_tokens,
+                                      ))
 
     return StreamingResponse(async_chunk(response), media_type="application/x-ndjson")
     # return JSONResponse(content=response_json)

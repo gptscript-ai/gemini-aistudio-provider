@@ -306,16 +306,6 @@ async def chat_completion(request: Request, data: OAICompletionRequest):
                     "function_call": {
                         "name": tool_call["function"]["name"],
                         "args": args
-                        # "args": ast.literal_eval(tool_call["function"]["arguments"])
-                        # "args": {
-                        #     # "question": "how are you?"
-                        #     "fields": {
-                        #         "key": "number",
-                        #         "value": {
-                        #             "number_value": 3
-                        #         }
-                        #     }
-                        # }
                     }
                 }
                 )

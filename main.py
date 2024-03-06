@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 import uuid
 from typing import AsyncIterable, Iterable, List, Optional
@@ -303,7 +304,7 @@ def map_gemini_to_oai_response(response: GenerationResponse) -> OAICompletionRes
                     "type": "function",
                     "function": {
                         "name": item["content"]["parts"][0]["function_call"]["name"],
-                        "arguments": str(jsonable_encoder(item["content"]["parts"][0]["function_call"]["args"]))
+                        "arguments": json.dumps(item["content"]["parts"][0]["function_call"]["args"])
                     }
                 }
             ]

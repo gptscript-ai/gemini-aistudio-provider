@@ -12,9 +12,14 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.routing import APIRouter
 from pydantic import BaseModel
 
+if "GEMINI_API_KEY" in os.environ:
+    api_key = os.environ["GEMINI_API_KEY"]
+else:
+    raise SystemExit("GEMINI_API_KEY not found in environment variables")
+
 app = FastAPI()
 router = APIRouter()
-genai.configure(api_key=os.environ['GEMINI_API_KEY'])
+genai.configure(api_key=api_key)
 
 
 @app.middleware("http")

@@ -3,4 +3,3 @@ uvicorn[standard]
 openai
 google-generativeai
 google-ai-generativelanguage
-google-cloud-aiplatform

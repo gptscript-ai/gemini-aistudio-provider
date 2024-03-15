@@ -1,7 +1,7 @@
-Expects you to have glcoud auth set up
+Expects you to have an api key from Google AI Studio
 
 ```
-gcloud auth application-default login
+export GEMINI_API_KEY=<your_api_key>
 ```
 
 Run using the following commands

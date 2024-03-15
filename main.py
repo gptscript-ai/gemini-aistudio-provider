@@ -1,9 +1,9 @@
-import base64
 import json
 import os
 import uuid
 from typing import AsyncIterable, Iterable, List, Optional
 
+import google.ai.generativelanguage as glm
 import google.generativeai as genai
 import openai.types
 from fastapi import FastAPI, Request
@@ -11,8 +11,6 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.routing import APIRouter
 from pydantic import BaseModel
-from vertexai.generative_models import (Content, FunctionDeclaration, GenerationConfig, GenerationResponse,
-                                        GenerativeModel, Part, Tool)
 
 app = FastAPI()
 router = APIRouter()
@@ -40,7 +38,7 @@ class Delta(Message):
 class OAIParameters(BaseModel):
     type: str
     properties: dict | None = None
-    required: list[str] | None = None
+    required: list[str] | None = []
 
 
 class OAIFunction(BaseModel):
@@ -61,76 +59,48 @@ class OAIToolCall(OAITool):
         return self.id if self.id else generate_id("call")
 
 
-class GeminiParameters(BaseModel):
-    type: str
-    properties: dict | None = None
-    required: list[str] | None = None
+def map_oai_to_gemini_function(oai_function: OAIFunction) -> glm.FunctionDeclaration:
+    for item in oai_function.parameters.properties:
+        oai_function.parameters.properties[item]["type_"] = oai_function.parameters.properties[item].pop("type")
+        oai_function.parameters.properties[item]["type_"] = oai_function.parameters.properties[item][
+            "type_"].upper()
+        oai_function.parameters.properties[item].pop("description")
 
-
-class GeminiFunction(BaseModel):
-    name: str
-    description: str
-    parameters: GeminiParameters
-
-    def convert_to_sdk_function_declaration(self) -> FunctionDeclaration:
-        return FunctionDeclaration(
-            name=self.name,
-            description=self.description,
-            parameters=self.parameters.dict()
-        )
-
-
-class GeminiTool(BaseModel):
-    function_declarations: list[GeminiFunction] | None = None
-
-    def convert_to_sdk_tool(self) -> Tool:
-        functions: list[FunctionDeclaration] = []
-        for function in self.function_declarations:
-            functions.append(function.convert_to_sdk_function_declaration())
-        return Tool(functions)
-
-
-def map_oai_to_gemini_function(oai_function: OAIFunction) -> GeminiFunction:
-    return GeminiFunction(
+    return glm.FunctionDeclaration(
         name=oai_function.name,
         description=oai_function.description,
-        parameters=GeminiParameters(
-            type=oai_function.parameters.type,
-            properties=oai_function.parameters.properties
-        )
+        parameters={
+            "type": oai_function.parameters.type.upper(),
+            "properties": oai_function.parameters.properties,
+            "required": oai_function.parameters.required,
+        }
     )
 
 
-def map_gemini_to_oai_function(gemini_function: GeminiFunction) -> OAIFunction:
-    oai_function = OAIFunction()
-    oai_function.name = gemini_function.name
-    oai_function.description = gemini_function.description
-    oai_function.parameters = gemini_function.parameters
-    return oai_function
-
-
 # Maps OpenAI message objects to Gemini content objects
-def map_oai_to_gemini_content(oai_messages: List[Message]) -> list[Content]:
-    user_parts: list[Part] = []
-    model_parts: list[Part] = []
-    function_parts: list[Part] = []
+def map_oai_to_gemini_content(oai_messages: List[Message]) -> list[glm.Content]:
+    user_parts: list[glm.Part] = []
+    model_parts: list[glm.Part] = []
+    function_parts: list[glm.Part] = []
     for message in oai_messages:
         if message.tool_call_id:
-            decoded_tool_call_id = base64.urlsafe_b64decode(bytes(message.tool_call_id, 'utf-8')).decode('utf-8')
-            part = Part.from_function_response(name=decoded_tool_call_id,
-                                               response={
-                                                   "name": decoded_tool_call_id,
-                                                   "content": message.content
-                                               })
+            part = glm.Part(function_response=glm.FunctionResponse(
+                name=message.tool_call_id,
+                response={
+                    "name": message.tool_call_id,
+                    "content": message.content
+                }
+            ))
         elif message.tool_calls:
             for tool_call in message.tool_calls:
-                part = Part.from_dict({
-                    "function_call": {
-                        "name": tool_call["function"]["name"]
-                    }
-                })
+                part = glm.Part(
+                    function_call=glm.FunctionCall(
+                        name=tool_call["function"]["name"],
+                        args=json.loads(tool_call["function"]["arguments"])
+                    )
+                )
         elif message.content:
-            part = Part.from_text(message.content)
+            part = glm.Part({"text": message.content})
 
         role: str
         match message.role:
@@ -155,37 +125,39 @@ def map_oai_to_gemini_content(oai_messages: List[Message]) -> list[Content]:
             case "function":
                 function_parts.append(part)
 
-    gemini_content: list[Content] = []
+    gemini_content: list[glm.Content] = []
 
     if user_parts:
-        gemini_content.append(Content(
-            role="user",
-            parts=user_parts
-        ))
+        gemini_content.append(glm.Content({
+            "role": "user",
+            "parts": user_parts
+        }))
 
     if model_parts:
-        gemini_content.append(Content(
-            role="model",
-            parts=model_parts
-        ))
+        gemini_content.append(glm.Content({
+            "role": "model",
+            "parts": model_parts
+        }))
 
     if function_parts:
-        gemini_content.append(Content(
-            role="function",
-            parts=function_parts
-        ))
+        gemini_content.append(glm.Content({
+            "role": "function",
+            "parts": function_parts
+        }))
 
     return gemini_content
 
 
-def oai_to_gemini_tools(oai_tools: list[OAITool]) -> list[Tool]:
-    gemini_tools: list[Tool] | None = None
+def oai_to_gemini_tools(oai_tools: list[OAITool]) -> list[glm.Tool]:
     if oai_tools is not None:
-        gemini_functions: list[GeminiFunction] = []
+        gemini_functions: list[glm.FunctionDeclaration] = []
         for tool in oai_tools:
             gemini_function = map_oai_to_gemini_function(tool.function)
             gemini_functions.append(gemini_function)
-        return [GeminiTool(function_declarations=gemini_functions).convert_to_sdk_tool()]
+
+        return [glm.Tool({
+            "function_declarations": gemini_functions
+        })]
 
 
 class OAICompletionRequest(BaseModel):
@@ -249,8 +221,10 @@ class OAICompletionResponse(BaseModel):
 def list_models() -> JSONResponse:
     models = []
     for model in genai.list_models():
-        model = openai.types.Model(id=model.name.removeprefix("models/"), created=0, object="model", owned_by="system")
-        models.append(model)
+        if 'generateContent' in model.supported_generation_methods:
+            model = openai.types.Model(id=model.name.removeprefix("models/"), created=0, object="model",
+                                       owned_by="system")
+            models.append(model)
 
     models = {"data": models}
     models_json = jsonable_encoder(models)
@@ -260,24 +234,34 @@ def list_models() -> JSONResponse:
 @app.post("/chat/completions", response_model_exclude_none=True, response_model_exclude_unset=True,
           response_model=OAICompletionResponse)
 async def chat_completion(data: OAICompletionRequest):
-    gemini_tools = oai_to_gemini_tools(data.tools)
-    messages: list[Content] = map_oai_to_gemini_content(data.messages)
+    if data.tools is not None:
+        gemini_tools = oai_to_gemini_tools(data.tools)
+    else:
+        gemini_tools = None
 
-    model = GenerativeModel("gemini-pro", tools=gemini_tools)
+    messages: list[glm.Content] = map_oai_to_gemini_content(data.messages)
+
+    model = genai.GenerativeModel(data.model)
+    print("GEMINI_MESSAGES: ", messages)
+    print("GEMINI_TOOLS: ", gemini_tools)
     response = model.generate_content(messages, tools=gemini_tools, stream=data.stream,
-                                      generation_config=GenerationConfig(
+
+                                      generation_config=genai.generative_models.generation_types.GenerationConfig(
                                           temperature=data.temperature,
                                           top_k=data.top_k,
                                           top_p=data.top_p,
                                           max_output_tokens=data.max_tokens,
-                                      ))
+                                      ),
+                                      )
 
     return StreamingResponse(async_chunk(response), media_type="application/x-ndjson")
 
 
-async def async_chunk(chunks: Iterable[GenerationResponse]) -> AsyncIterable[str]:
+async def async_chunk(chunks: Iterable[genai.generative_models.generation_types.GenerateContentResponse]) -> \
+        AsyncIterable[str]:
     for chunk in chunks:
         chunk = map_gemini_to_oai_response(chunk)
+        print("MAPPED CHUNK: ", chunk.json())
         yield "data: " + chunk.json() + "\n\n"
 
 
@@ -285,47 +269,64 @@ def generate_id(type: str = "chatcmpl") -> str:
     return type + "-" + str(uuid.uuid4())
 
 
-def map_gemini_to_oai_response(response: GenerationResponse) -> OAICompletionResponse:
+def map_gemini_to_oai_response(
+        response: genai.generative_models.generation_types.GenerateContentResponse) -> OAICompletionResponse:
     choices = []
-    response = response.to_dict()
-    for idx, item in enumerate(response["candidates"]):
-        try:
-            tool_call_id = base64.urlsafe_b64encode(
-                bytes(item["content"]["parts"][0]["function_call"]["name"], 'utf-8')).decode(
-                'utf-8')
-        except:
-            tool_call_id = None
+    tool_calls = []
+    # response = dict_from_class(response)
+    # print("GEMINI RESPONSE: ", dict_from_class(response.parts))
+    print("UNTOUCHED_RESPONSE: ", response)
 
-        try:
-            tool_calls = [
-                {
+    # print("GENERATION RESPONSE: ", response.candidates[0].content.role)
+
+    for outer, candidate in enumerate(response.candidates):
+        content: str | None = None
+        for inner, part in enumerate(response.parts):
+
+            tool_call_id = part.function_call.name.replace("_", "-")
+            if tool_call_id is not None and tool_call_id != "":
+                tool_calls.append({
                     "id": tool_call_id,
-                    "index": idx,
+                    "index": inner,
                     "type": "function",
                     "function": {
-                        "name": item["content"]["parts"][0]["function_call"]["name"],
-                        "arguments": json.dumps(item["content"]["parts"][0]["function_call"]["args"])
+                        "name": part.function_call.name.replace("_", "-"),
+                        "arguments": json.dumps(dict(part.function_call.args)),
                     }
-                }
-            ]
-        except:
-            tool_calls = None
+                })
+            else:
+                tool_calls = None
+
+            try:
+                content = part.text
+            except KeyError:
+                content = None
+
+        role: str
+        match candidate.content.role:
+            case "system":
+                role = "user"
+            case "user":
+                role = "user"
+            case "assistant":
+                role = "model"
+            case "model":
+                role = "assistant"
+            case "function":
+                role = "tool"
+            case _:
+                role = "user"
 
         try:
-            finish_reason = map_finish_reason(item["finish_reason"])
+            finish_reason = map_finish_reason(candidate.finish_reason)
         except KeyError:
             finish_reason = None
 
-        try:
-            content = item["content"]["parts"][0]["text"]
-        except KeyError:
-            content = None
-
         choice = RespChoice(
             finish_reason=finish_reason,
-            index=idx,
+            index=outer,
             delta=Delta(
-                role=item["content"]["role"],
+                role=role,
                 content=content,
                 tool_calls=tool_calls
             ),

@@ -222,6 +222,16 @@ class OAICompletionResponse(BaseModel):
     top_p: float | None = None
 
 
+@app.post("/")
+async def post_root():
+    return 'ok'
+
+
+@app.get("/")
+async def get_root():
+    return 'ok'
+
+
 @app.get("/v1/models")
 def list_models() -> JSONResponse:
     models = []

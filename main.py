@@ -222,7 +222,7 @@ class OAICompletionResponse(BaseModel):
     top_p: float | None = None
 
 
-@app.get("/models")
+@app.get("/v1/models")
 def list_models() -> JSONResponse:
     models = []
     for model in genai.list_models():
@@ -236,7 +236,7 @@ def list_models() -> JSONResponse:
     return JSONResponse(content=models_json)
 
 
-@app.post("/chat/completions", response_model_exclude_none=True, response_model_exclude_unset=True,
+@app.post("/v1/chat/completions", response_model_exclude_none=True, response_model_exclude_unset=True,
           response_model=OAICompletionResponse)
 async def chat_completion(data: OAICompletionRequest):
     if data.tools is not None:

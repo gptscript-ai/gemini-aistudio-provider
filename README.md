@@ -7,7 +7,7 @@ export GEMINI_API_KEY=<your_api_key>
 ## Usage
 
 ```
-gptscript --default-model='gemini-pro from github.com/drpebcak/gemini-proxy' examples/bob.gpt
+gptscript --default-model='gemini-pro from github.com/gptscript-ai/gemini-openai-shim' examples/bob.gpt
 ```
 
 ## Development

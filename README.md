@@ -4,7 +4,7 @@ Expects you to have an api key from Google AI Studio
 export GEMINI_API_KEY=<your_api_key>
 ```
 
-## Usage
+## Usage Example
 
 ```
 gptscript --default-model='gemini-pro from github.com/gptscript-ai/gemini-openai-shim' examples/bob.gpt

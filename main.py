@@ -17,15 +17,21 @@ if "GEMINI_API_KEY" in os.environ:
 else:
     raise SystemExit("GEMINI_API_KEY not found in environment variables")
 
+debug = os.environ.get("GPTSCRIPT_DEBUG", "false") == "true"
 app = FastAPI()
 router = APIRouter()
 genai.configure(api_key=api_key)
 
 
+def log(*args):
+    if debug:
+        print(*args)
+
+
 @app.middleware("http")
 async def log_body(request: Request, call_next):
     body = await request.body()
-    print("REQUEST BODY: ", body)
+    log("REQUEST BODY: ", body)
     return await call_next(request)
 
 
@@ -257,10 +263,9 @@ async def chat_completion(data: OAICompletionRequest):
     messages: list[glm.Content] = map_oai_to_gemini_content(data.messages)
 
     model = genai.GenerativeModel(data.model)
-    print("GEMINI_MESSAGES: ", messages)
-    print("GEMINI_TOOLS: ", gemini_tools)
+    log("GEMINI_MESSAGES: ", messages)
+    log("GEMINI_TOOLS: ", gemini_tools)
     response = model.generate_content(messages, tools=gemini_tools, stream=data.stream,
-
                                       generation_config=genai.generative_models.generation_types.GenerationConfig(
                                           temperature=data.temperature,
                                           top_k=data.top_k,
@@ -276,7 +281,7 @@ async def async_chunk(chunks: Iterable[genai.generative_models.generation_types.
         AsyncIterable[str]:
     for chunk in chunks:
         chunk = map_gemini_to_oai_response(chunk)
-        print("MAPPED CHUNK: ", chunk.json())
+        log("MAPPED CHUNK: ", chunk.json())
         yield "data: " + chunk.json() + "\n\n"
 
 
@@ -289,10 +294,10 @@ def map_gemini_to_oai_response(
     choices = []
     tool_calls = []
     # response = dict_from_class(response)
-    # print("GEMINI RESPONSE: ", dict_from_class(response.parts))
-    print("UNTOUCHED_RESPONSE: ", response)
+    # log("GEMINI RESPONSE: ", dict_from_class(response.parts))
+    log("UNTOUCHED_RESPONSE: ", response)
 
-    # print("GENERATION RESPONSE: ", response.candidates[0].content.role)
+    # log("GENERATION RESPONSE: ", response.candidates[0].content.role)
 
     for outer, candidate in enumerate(response.candidates):
         content: str | None = None
@@ -381,3 +386,9 @@ def map_finish_reason(finish_reason: str) -> str:
     elif finish_reason == 0:
         return "stop"
     return finish_reason
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="127.0.0.1", port=int(os.environ.get("PORT", "8000")),
+                log_level="debug" if debug else "critical", reload=debug, access_log=debug)

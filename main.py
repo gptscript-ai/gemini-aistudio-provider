@@ -1,7 +1,6 @@
 import json
 import os
-import uuid
-from typing import AsyncIterable, Iterable, List, Optional
+from typing import AsyncIterable, Iterable
 
 import google.ai.generativelanguage as glm
 import google.generativeai as genai
@@ -10,7 +9,8 @@ from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.routing import APIRouter
-from pydantic import BaseModel
+from openai.types.chat import ChatCompletionChunk
+from openai.types.chat.chat_completion_chunk import Choice, ChoiceDelta
 
 if "GEMINI_API_KEY" in os.environ:
     api_key = os.environ["GEMINI_API_KEY"]
@@ -35,207 +35,123 @@ async def log_body(request: Request, call_next):
     return await call_next(request)
 
 
-class Message(BaseModel):
-    role: str
-    content: str | None = None
-    tool_call_id: str | None = None
-    tool_calls: list[dict] | None = None
-
-
-class Delta(Message):
-    pass
-
-
-class OAIParameters(BaseModel):
-    type: str
-    properties: dict | None = None
-    required: list[str] | None = []
-
-
-class OAIFunction(BaseModel):
-    name: str
-    description: str
-    parameters: OAIParameters
-
-
-class OAITool(BaseModel):
-    type: str | str = "function"
-    function: OAIFunction
-
-
-class OAIToolCall(OAITool):
-    id: str | None = None
-
-    def generate_id(self) -> str:
-        return self.id if self.id else generate_id("call")
-
-
-def map_oai_to_gemini_function(oai_function: OAIFunction) -> glm.FunctionDeclaration:
-    for item in oai_function.parameters.properties:
-        oai_function.parameters.properties[item]["type_"] = oai_function.parameters.properties[item].pop("type")
-        oai_function.parameters.properties[item]["type_"] = oai_function.parameters.properties[item][
-            "type_"].upper()
-        oai_function.parameters.properties[item].pop("description")
-
-    return glm.FunctionDeclaration(
-        name=oai_function.name,
-        description=oai_function.description,
-        parameters={
-            "type": oai_function.parameters.type.upper(),
-            "properties": oai_function.parameters.properties,
-            "required": oai_function.parameters.required,
-        }
-    )
-
-
-# Maps OpenAI message objects to Gemini content objects
-def map_oai_to_gemini_content(oai_messages: List[Message]) -> list[glm.Content]:
-    user_parts: list[glm.Part] = []
-    model_parts: list[glm.Part] = []
-    function_parts: list[glm.Part] = []
-    for message in oai_messages:
-        if message.tool_call_id:
-            part = glm.Part(function_response=glm.FunctionResponse(
-                name=message.tool_call_id,
-                response={
-                    "name": message.tool_call_id,
-                    "content": message.content
-                }
-            ))
-        elif message.tool_calls:
-            for tool_call in message.tool_calls:
-                part = glm.Part(
-                    function_call=glm.FunctionCall(
-                        name=tool_call["function"]["name"],
-                        args=json.loads(tool_call["function"]["arguments"])
-                    )
-                )
-        elif message.content:
-            part = glm.Part({"text": message.content})
-
-        role: str
-        match message.role:
-            case "system":
-                role = "user"
-            case "user":
-                role = "user"
-            case "assistant":
-                role = "model"
-            case "model":
-                role = "model"
-            case "tool":
-                role = "function"
-            case _:
-                role = "user"
-
-        match role:
-            case "user":
-                user_parts.append(part)
-            case "model":
-                model_parts.append(part)
-            case "function":
-                function_parts.append(part)
-
-    gemini_content: list[glm.Content] = []
-
-    if user_parts:
-        gemini_content.append(glm.Content({
-            "role": "user",
-            "parts": user_parts
-        }))
-
-    if model_parts:
-        gemini_content.append(glm.Content({
-            "role": "model",
-            "parts": model_parts
-        }))
-
-    if function_parts:
-        gemini_content.append(glm.Content({
-            "role": "function",
-            "parts": function_parts
-        }))
-
-    return gemini_content
-
-
-def oai_to_gemini_tools(oai_tools: list[OAITool]) -> list[glm.Tool]:
-    if oai_tools is not None:
-        gemini_functions: list[glm.FunctionDeclaration] = []
-        for tool in oai_tools:
-            gemini_function = map_oai_to_gemini_function(tool.function)
-            gemini_functions.append(gemini_function)
-
-        return [glm.Tool({
-            "function_declarations": gemini_functions
-        })]
-
-
-class OAICompletionRequest(BaseModel):
-    model: str
-    messages: List[Message] | None = None
-    max_tokens: int | None = None
-    stream: bool | None = False
-    seed: float | None = None
-    tools: List[OAITool] | None = None
-    tool_choice: List[OAITool] | Optional[str] | None = None
-    top_k: int | None = None
-    top_p: float | None = None
-    temperature: float | None = None
-
-
-class TopLogprob(BaseModel):
-    token: str
-    logprob: int | None = None
-    bytes: List[int]
-
-
-class OAIContent(BaseModel):
-    token: str | None = None
-    logprob: Optional[int] = None
-    bytes: Optional[List[int]] = None
-    top_logprobs: Optional[List[TopLogprob]] = None
-
-
-class Logprobs(BaseModel):
-    content: List[OAIContent] | None = None
-
-
-class RespChoice(BaseModel):
-    finish_reason: str | None = None
-    index: int
-    delta: Delta
-    logprobs: Logprobs
-    tool_calls: List[OAIToolCall] | None = None
-
-
-class Usage(BaseModel):
-    completion_tokens: int
-    prompt_tokens: int
-    total_tokens: int
-
-
-class OAICompletionResponse(BaseModel):
-    id: str
-    choices: List[RespChoice]
-    created: int = None
-    model: str
-    system_fingerprint: str
-    object: str
-    usage: Usage | None = None
-    temperature: float | None = None
-    top_k: int | None = None
-    top_p: float | None = None
-
-
-@app.post("/")
-async def post_root():
-    return 'ok'
-
-
 @app.get("/")
 async def get_root():
     return 'ok'
+
+
+async def map_tools(req_tools: list | None = None) -> list[glm.Tool] | None:
+    function_declarations: list[glm.FunctionDeclaration] = []
+    if req_tools:
+        for tool in req_tools:
+            parameters = tool['function']['parameters']
+            if parameters is None:
+                parameters = {
+                    "properties":
+                        {
+                            "fake":
+                                {
+                                    "description": "a fake description",
+                                    "type": "string"
+                                }
+                        },
+                    "type": "object"
+                }
+            for item in parameters['properties']:
+                parameters['properties'][item]['type_'] = parameters['properties'][item].pop('type')
+                parameters['properties'][item]['type_'] = parameters['properties'][item]['type_'].upper()
+
+            function_declarations.append(glm.FunctionDeclaration(
+                name=tool['function']['name'],
+                parameters={
+                    "type": parameters['type'].upper(),
+                    "properties": parameters['properties'],
+                    "required": None,
+                },
+                description=tool['function']['description']
+            ))
+        tools: list[glm.Tool] = [glm.Tool(function_declarations=function_declarations)]
+        return tools
+    return None
+
+
+def merge_consecutive_dicts_with_same_value(list_of_dicts, key) -> list[dict]:
+    merged_list = []
+    index = 0
+    while index < len(list_of_dicts):
+        current_dict = list_of_dicts[index]
+        value_to_match = current_dict.get(key)
+        compared_index = index + 1
+        while compared_index < len(list_of_dicts) and list_of_dicts[compared_index].get(key) == value_to_match:
+            log("CURRENT DICT: ", current_dict)
+            log("COMPARED DICT: ", list_of_dicts[compared_index])
+            list_of_dicts[compared_index]["content"] = current_dict["content"] + "\n" + list_of_dicts[compared_index][
+                "content"]
+            current_dict.update(list_of_dicts[compared_index])
+            compared_index += 1
+        merged_list.append(current_dict)
+        index = compared_index
+    return merged_list
+
+
+async def map_messages(req_messages: list) -> list[glm.Content] | None:
+    messages: list[glm.Content] = []
+    log(req_messages)
+
+    if req_messages is not None:
+        for message in req_messages:
+            match message['role']:
+                case "system":
+                    message['role'] = "user"
+                case "user":
+                    message['role'] = "user"
+                case "assistant":
+                    message['role'] = "model"
+                case "model":
+                    message['role'] = "model"
+                case "tool":
+                    message['role'] = "function"
+                case _:
+                    message['role'] = "user"
+        req_messages = merge_consecutive_dicts_with_same_value(req_messages, "role")
+
+        for message in req_messages:
+            if 'tool_call_id' in message.keys():
+                convert_message = glm.Content(
+                    role=message['role'],
+                    parts=[glm.Part(
+                        function_response=glm.FunctionResponse(
+                            name=message['name'],
+                            response={
+                                "name": message['name'],
+                                "content": message['content']
+                            }
+                        )
+                    )
+                    ]
+                )
+            elif 'tool_calls' in message.keys():
+                tool_call_parts: list[glm.Part] = []
+                for tool_call in message['tool_calls']:
+                    function_call = glm.FunctionCall(
+                        name=tool_call['function']['name'],
+                        args=json.loads(tool_call['function']['arguments'])
+                    )
+                    tool_call_parts.append(glm.Part(function_call=function_call))
+                convert_message = glm.Content(
+                    role=message['role'],
+                    parts=tool_call_parts
+                )
+            elif 'content' in message.keys():
+                convert_message = glm.Content(
+                    role=message['role'],
+                    parts=[glm.Part({"text": message['content']})
+                           ]
+                )
+
+            messages.append(convert_message)
+        return messages
+    return None
 
 
 @app.get("/v1/models")
@@ -252,70 +168,84 @@ def list_models() -> JSONResponse:
     return JSONResponse(content=models_json)
 
 
-@app.post("/v1/chat/completions", response_model_exclude_none=True, response_model_exclude_unset=True,
-          response_model=OAICompletionResponse)
-async def chat_completion(data: OAICompletionRequest):
-    if data.tools is not None:
-        gemini_tools = oai_to_gemini_tools(data.tools)
-    else:
-        gemini_tools = None
+@app.post("/v1/chat/completions")
+async def chat_completion(request: Request):
+    data = await request.body()
+    data = json.loads(data)
 
-    messages: list[glm.Content] = map_oai_to_gemini_content(data.messages)
+    req_tools = data.get("tools", None)
+    tools: list[glm.Tool] | None = None
+    if req_tools is not None:
+        tools = await map_tools(req_tools)
 
-    model = genai.GenerativeModel(data.model)
+    req_messages = data["messages"]
+    messages = await map_messages(req_messages)
+
+    temperature = data.get("temperature", None)
+    if temperature is not None:
+        temperature = float(temperature)
+
+    stream = data.get("stream", False)
+
+    top_k = data.get("top_k", None)
+    if top_k is not None:
+        top_k = float(top_k)
+
+    top_p = data.get("top_p", None)
+    if top_p is not None:
+        top_p = float(top_p)
+
+    max_output_tokens = data.get("max_tokens", None)
+    if max_output_tokens is not None:
+        max_output_tokens = float(max_output_tokens)
+
+    model = genai.GenerativeModel(data["model"])
     log("GEMINI_MESSAGES: ", messages)
-    log("GEMINI_TOOLS: ", gemini_tools)
-    response = model.generate_content(messages, tools=gemini_tools, stream=data.stream,
-                                      generation_config=genai.generative_models.generation_types.GenerationConfig(
-                                          temperature=data.temperature,
-                                          top_k=data.top_k,
-                                          top_p=data.top_p,
-                                          max_output_tokens=data.max_tokens,
+    log("GEMINI_TOOLS: ", tools)
+    response = model.generate_content(contents=messages,
+                                      tools=tools,
+                                      stream=stream,
+                                      generation_config=glm.GenerationConfig(
+                                          temperature=temperature,
+                                          top_k=top_k,
+                                          top_p=top_p,
+                                          max_output_tokens=max_output_tokens,
                                       ),
                                       )
 
     return StreamingResponse(async_chunk(response), media_type="application/x-ndjson")
 
 
-async def async_chunk(chunks: Iterable[genai.generative_models.generation_types.GenerateContentResponse]) -> \
+async def async_chunk(chunks: Iterable[glm.GenerateContentResponse]) -> \
         AsyncIterable[str]:
     for chunk in chunks:
-        chunk = map_gemini_to_oai_response(chunk)
-        log("MAPPED CHUNK: ", chunk.json())
-        yield "data: " + chunk.json() + "\n\n"
+        mapped_chunk = map_streaming_resp(chunk)
+        log("MAPPED CHUNK: ", mapped_chunk.model_dump_json())
+        yield "data: " + mapped_chunk.model_dump_json() + "\n\n"
 
 
-def generate_id(type: str = "chatcmpl") -> str:
-    return type + "-" + str(uuid.uuid4())
-
-
-def map_gemini_to_oai_response(
-        response: genai.generative_models.generation_types.GenerateContentResponse) -> OAICompletionResponse:
-    choices = []
+def map_streaming_resp(
+        chunk: glm.GenerateContentResponse) -> ChatCompletionChunk | None:
     tool_calls = []
-    # response = dict_from_class(response)
-    # log("GEMINI RESPONSE: ", dict_from_class(response.parts))
-    log("UNTOUCHED_RESPONSE: ", response)
-
-    # log("GENERATION RESPONSE: ", response.candidates[0].content.role)
-
-    for outer, candidate in enumerate(response.candidates):
+    for outer, candidate in enumerate(chunk.candidates):
         content: str | None = None
-        for inner, part in enumerate(response.parts):
-
-            tool_call_id = part.function_call.name.replace("_", "-")
+        for inner, part in enumerate(candidate.content.parts):
+            tool_call_id = part.function_call.name
             if tool_call_id is not None and tool_call_id != "":
+                args = dict(part.function_call.args)
+                for key, value in args.items():
+                    if isinstance(args[key], str):
+                        args[key] = value.replace('\\', '')
+
                 tool_calls.append({
                     "id": tool_call_id,
                     "index": inner,
                     "type": "function",
                     "function": {
-                        "name": part.function_call.name.replace("_", "-"),
-                        "arguments": json.dumps(dict(part.function_call.args)),
+                        "name": part.function_call.name,
+                        "arguments": json.dumps(args),
                     }
                 })
-            else:
-                tool_calls = None
 
             try:
                 content = part.text
@@ -323,7 +253,7 @@ def map_gemini_to_oai_response(
                 content = None
 
         role: str
-        match candidate.content.role:
+        match chunk.candidates[0].content.role:
             case "system":
                 role = "user"
             case "user":
@@ -338,37 +268,34 @@ def map_gemini_to_oai_response(
                 role = "user"
 
         try:
-            finish_reason = map_finish_reason(candidate.finish_reason)
+            if len(tool_calls) > 0:
+                finish_reason = "tool_calls"
+            else:
+                finish_reason = map_finish_reason(str(candidate.finish_reason))
         except KeyError:
             finish_reason = None
 
-        choice = RespChoice(
-            finish_reason=finish_reason,
-            index=outer,
-            delta=Delta(
-                role=role,
-                content=content,
-                tool_calls=tool_calls
-            ),
-            logprobs=Logprobs(
-                content=[
-                    OAIContent(
-                        token=content,
-                    )
-                ],
-                tool_calls=tool_calls
-            )
-        )
-        choices.append(choice)
+        log("FINISH_REASON: ", finish_reason)
 
-    return OAICompletionResponse(
-        id=generate_id(),
-        choices=choices,
-        created=0,
-        model="gemini-pro",
-        system_fingerprint="TEMP",
-        object="chat.completion.chunk",
-    )
+        resp = ChatCompletionChunk(
+            id="0",
+            choices=[
+                Choice(
+                    delta=ChoiceDelta(
+                        content=content,
+                        tool_calls=tool_calls,
+                        role=role
+                    ),
+                    finish_reason=finish_reason,
+                    index=0,
+                )
+            ],
+            created=0,
+            model="",
+            object="chat.completion.chunk",
+        )
+        return resp
+    return None
 
 
 def map_finish_reason(finish_reason: str) -> str:
@@ -381,14 +308,15 @@ def map_finish_reason(finish_reason: str) -> str:
         return "content_filter"
     elif finish_reason == "STOP":
         return "stop"
-    elif finish_reason == 1:
+    elif finish_reason == '1':
         return "stop"
-    elif finish_reason == 0:
+    elif finish_reason == '0':
         return "stop"
     return finish_reason
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("main:app", host="127.0.0.1", port=int(os.environ.get("PORT", "8000")),
                 log_level="debug" if debug else "critical", reload=debug, access_log=debug)

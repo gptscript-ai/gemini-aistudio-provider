@@ -15,7 +15,7 @@ if result.returncode != 0:
 
 try:
     resp = json.loads(result.stdout.strip())
-    key = resp["key"].lower()
+    key = resp["key"]
 
 except json.JSONDecodeError:
     print("Failed to decode JSON.", file=sys.stderr)

@@ -182,7 +182,11 @@ async def chat_completion(request: Request):
     req_messages = data["messages"]
     messages = await map_messages(req_messages)
 
-    generation_config = glm.GenerationConfig(response_mime_type="text/plain")
+    generation_config = glm.GenerationConfig(
+        response_mime_type="text/plain",
+        candidate_count=1,
+    )
+
     temperature = data.get("temperature", None)
     if temperature is not None:
         generation_config.temperature = float(temperature)
@@ -208,7 +212,7 @@ async def chat_completion(request: Request):
         response = model.generate_content(contents=messages,
                                           tools=tools,
                                           stream=stream,
-                                          # generation_config=generation_config,
+                                          generation_config=generation_config,
                                           )
     except google.api_core.exceptions.InvalidArgument as e:
         error_code = e.code

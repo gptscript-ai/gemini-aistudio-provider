@@ -203,7 +203,7 @@ async def chat_completion(request: Request):
 
     max_output_tokens = data.get("max_tokens", None)
     if max_output_tokens is not None:
-        generation_config.max_output_tokens = float(max_output_tokens)
+        generation_config.max_output_tokens = int(max_output_tokens)
 
     model = genai.GenerativeModel(data["model"])
     log("GEMINI_MESSAGES: ", messages)

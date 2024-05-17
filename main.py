@@ -195,7 +195,7 @@ async def chat_completion(request: Request):
 
     top_k = data.get("top_k", None)
     if top_k is not None:
-        generation_config.top_k = float(top_k)
+        generation_config.top_k = int(top_k)
 
     top_p = data.get("top_p", None)
     if top_p is not None:

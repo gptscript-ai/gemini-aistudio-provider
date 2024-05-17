@@ -212,7 +212,7 @@ async def chat_completion(request: Request):
                                           )
     except Exception as e:
         # google.api_core.exceptions.InvalidArgument
-        return StreamingResponse(f"{e}", status_code=500, media_type="application/x-ndjson")
+        return StreamingResponse(json.dumps(e), status_code=500, media_type="application/x-ndjson")
 
     return StreamingResponse(async_chunk(response), media_type="application/x-ndjson")
 

@@ -3,6 +3,7 @@ import os
 from typing import AsyncIterable, Iterable
 
 import google.ai.generativelanguage as glm
+import google.api_core.exceptions
 import google.generativeai as genai
 import openai.types
 from fastapi import FastAPI, Request
@@ -181,23 +182,24 @@ async def chat_completion(request: Request):
     req_messages = data["messages"]
     messages = await map_messages(req_messages)
 
+    generation_config = glm.GenerationConfig()
     temperature = data.get("temperature", None)
     if temperature is not None:
-        temperature = float(temperature)
+        generation_config.temperature = float(temperature)
 
     stream = data.get("stream", False)
 
     top_k = data.get("top_k", None)
     if top_k is not None:
-        top_k = float(top_k)
+        generation_config.top_k = float(top_k)
 
     top_p = data.get("top_p", None)
     if top_p is not None:
-        top_p = float(top_p)
+        generation_config.top_p = float(top_p)
 
     max_output_tokens = data.get("max_tokens", None)
     if max_output_tokens is not None:
-        max_output_tokens = float(max_output_tokens)
+        generation_config.max_output_tokens = float(max_output_tokens)
 
     model = genai.GenerativeModel(data["model"])
     log("GEMINI_MESSAGES: ", messages)
@@ -206,14 +208,10 @@ async def chat_completion(request: Request):
         response = model.generate_content(contents=messages,
                                           tools=tools,
                                           stream=stream,
-                                          generation_config=glm.GenerationConfig(
-                                              temperature=temperature,
-                                              top_k=top_k,
-                                              top_p=top_p,
-                                              max_output_tokens=max_output_tokens,
-                                          ),
+                                          generation_config=generation_config,
                                           )
     except Exception as e:
+        # google.api_core.exceptions.InvalidArgument
         return StreamingResponse(f"{e}", status_code=500, media_type="application/x-ndjson")
 
     return StreamingResponse(async_chunk(response), media_type="application/x-ndjson")

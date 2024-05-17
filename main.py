@@ -211,9 +211,8 @@ async def chat_completion(request: Request):
                                           generation_config=generation_config,
                                           )
     except google.api_core.exceptions.InvalidArgument as e:
-        error_message = f"Bad request: {e}"
-        return StreamingResponse(error_message, status_code=400, media_type="application/x-ndjson")
-
+        error_message = {"Bad request": str(e)}
+        return StreamingResponse(json.dumps(error_message), status_code=400, media_type="application/x-ndjson")
 
     return StreamingResponse(async_chunk(response), media_type="application/x-ndjson")
 

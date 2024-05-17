@@ -208,7 +208,7 @@ async def chat_completion(request: Request):
         response = model.generate_content(contents=messages,
                                           tools=tools,
                                           stream=stream,
-                                          generation_config=generation_config,
+                                          # generation_config=generation_config,
                                           )
     except google.api_core.exceptions.InvalidArgument as e:
         error_code = e.code

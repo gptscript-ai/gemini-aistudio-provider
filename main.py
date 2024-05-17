@@ -184,6 +184,9 @@ async def chat_completion(request: Request):
 
     generation_config = glm.GenerationConfig(
         response_mime_type="text/plain",
+        response_schema={
+            "type": "STRING",
+        },
         candidate_count=1,
     )
 

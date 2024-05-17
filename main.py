@@ -202,16 +202,19 @@ async def chat_completion(request: Request):
     model = genai.GenerativeModel(data["model"])
     log("GEMINI_MESSAGES: ", messages)
     log("GEMINI_TOOLS: ", tools)
-    response = model.generate_content(contents=messages,
-                                      tools=tools,
-                                      stream=stream,
-                                      generation_config=glm.GenerationConfig(
-                                          temperature=temperature,
-                                          top_k=top_k,
-                                          top_p=top_p,
-                                          max_output_tokens=max_output_tokens,
-                                      ),
-                                      )
+    try:
+        response = model.generate_content(contents=messages,
+                                          tools=tools,
+                                          stream=stream,
+                                          generation_config=glm.GenerationConfig(
+                                              temperature=temperature,
+                                              top_k=top_k,
+                                              top_p=top_p,
+                                              max_output_tokens=max_output_tokens,
+                                          ),
+                                          )
+    except Exception as e:
+        return StreamingResponse(f"{e}", status_code=500, media_type="application/x-ndjson")
 
     return StreamingResponse(async_chunk(response), media_type="application/x-ndjson")
 

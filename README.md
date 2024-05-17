@@ -3,7 +3,7 @@ Expects you to have an api key from Google AI Studio
 ## Usage Example
 
 ```
-gptscript --default-model='gemini-pro from github.com/gptscript-ai/google-provider' examples/bob.gpt
+gptscript --default-model='gemini-pro from github.com/gptscript-ai/gemini-aistudio-provider' examples/bob.gpt
 ```
 
 ## Development

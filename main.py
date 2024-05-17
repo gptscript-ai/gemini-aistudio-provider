@@ -182,7 +182,7 @@ async def chat_completion(request: Request):
     req_messages = data["messages"]
     messages = await map_messages(req_messages)
 
-    generation_config = glm.GenerationConfig()
+    generation_config = glm.GenerationConfig(response_mime_type="application/json")
     temperature = data.get("temperature", None)
     if temperature is not None:
         generation_config.temperature = float(temperature)

@@ -86,8 +86,8 @@ def merge_consecutive_dicts_with_same_value(list_of_dicts, key) -> list[dict]:
         while compared_index < len(list_of_dicts) and list_of_dicts[compared_index].get(key) == value_to_match:
             log("CURRENT DICT: ", current_dict)
             log("COMPARED DICT: ", list_of_dicts[compared_index])
-            list_of_dicts[compared_index]["content"] = current_dict["content"] + "\n" + list_of_dicts[compared_index][
-                "content"]
+            list_of_dicts[compared_index]["content"] = current_dict.get("content", "") + "\n" + \
+                                                       list_of_dicts[compared_index].get("content", "")
             current_dict.update(list_of_dicts[compared_index])
             compared_index += 1
         merged_list.append(current_dict)
@@ -118,19 +118,23 @@ async def map_messages(req_messages: list) -> list[glm.Content] | None:
 
         for message in req_messages:
             if 'tool_call_id' in message.keys():
-                convert_message = glm.Content(
-                    role=message['role'],
-                    parts=[glm.Part(
-                        function_response=glm.FunctionResponse(
-                            name=message['name'],
-                            response={
-                                "name": message['name'],
-                                "content": message['content']
-                            }
+                try:
+                    convert_message = glm.Content(
+                        role=message['role'],
+                        parts=[glm.Part(
+                            function_response=glm.FunctionResponse(
+                                name=message['name'],
+                                response={
+                                    "name": message['name'],
+                                    "content": message['content']
+                                }
+                            )
                         )
+                        ]
                     )
-                    ]
-                )
+                except KeyError as e:
+                    raise SystemExit(f"Error: key {e} not found in message. Please check the message format. {message}")
+
             elif 'tool_calls' in message.keys():
                 tool_call_parts: list[glm.Part] = []
                 for tool_call in message['tool_calls']:

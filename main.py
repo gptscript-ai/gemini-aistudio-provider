@@ -3,7 +3,7 @@ import os
 from typing import AsyncIterable, Iterable
 
 import google.ai.generativelanguage as glm
-import google.api_core.exceptions
+import google.api_core.exceptions as ge
 import google.generativeai as genai
 import openai.types
 from fastapi import FastAPI, Request
@@ -217,8 +217,24 @@ async def chat_completion(request: Request):
                                           stream=stream,
                                           generation_config=generation_config,
                                           )
-    except google.api_core.exceptions.InvalidArgument as e:
-        error_code = e.code
+    except (ge.InvalidArgument,
+            ge.FailedPrecondition,
+            ge.OutOfRange,
+            ge.Unauthorized,
+            ge.Aborted,
+            ge.ClientError,
+            ge.BadRequest,
+            ge.BadGateway,
+            ge.DeadlineExceeded,
+            ge.AlreadyExists,
+            ge.Cancelled,
+            ge.Conflict,
+            ge.DataLoss,
+            ge.DuplicateCredentialArgs) as e:
+        try:
+            error_code = e.code
+        except:
+            error_code = 500
         error_message = {"Error from provider": e.message}
         return StreamingResponse(json.dumps(error_message), status_code=error_code, media_type="application/x-ndjson")
 

@@ -45,19 +45,11 @@ async def map_tools(req_tools: list | None = None) -> list[glm.Tool] | None:
     function_declarations: list[glm.FunctionDeclaration] = []
     if req_tools:
         for tool in req_tools:
-            parameters = tool['function']['parameters']
-            if parameters is None:
-                parameters = {
-                    "properties":
-                        {
-                            "fake":
-                                {
-                                    "description": "a fake description",
-                                    "type": "string"
-                                }
-                        },
-                    "type": "object"
-                }
+            parameters: dict = tool['function'].get('parameters', {
+                "properties": {},
+                "type": "object"
+            })
+
             for item in parameters['properties']:
                 parameters['properties'][item]['type_'] = parameters['properties'][item].pop('type')
                 parameters['properties'][item]['type_'] = parameters['properties'][item]['type_'].upper()
@@ -100,6 +92,22 @@ async def map_messages(req_messages: list) -> list[glm.Content] | None:
     log(req_messages)
 
     if req_messages is not None:
+#         system: str = """
+# Hi. I will explain how you should behave.
+# You are task oriented system.
+# You receive input from a user, process the input from the given instructions, and then output the result.
+# Your objective is to provide consistent and correct results, using tools where appropriate.
+# Do not call tools that you have not been given access to.
+# Make sure you provide only the correct inputs when calling tools.
+# You do not need to explain the steps taken, only provide the result to the given instructions.
+# You are referred to as a tool.
+# You don't move to the next step until you have a result.
+# """
+#         req_messages = [
+#                            {"role": "system", "content": system},
+#                            {"role": "model", "content": "Ok, let's start! Please continue in your native language."}
+#                        ] + req_messages
+
         for message in req_messages:
             match message['role']:
                 case "system":
@@ -138,6 +146,7 @@ async def map_messages(req_messages: list) -> list[glm.Content] | None:
             elif 'tool_calls' in message.keys():
                 tool_call_parts: list[glm.Part] = []
                 for tool_call in message['tool_calls']:
+                    log("INCOMING TOOL_CALL: ", tool_call)
                     function_call = glm.FunctionCall(
                         name=tool_call['function']['name'],
                         args=json.loads(tool_call['function']['arguments'])
@@ -150,8 +159,7 @@ async def map_messages(req_messages: list) -> list[glm.Content] | None:
             elif 'content' in message.keys():
                 convert_message = glm.Content(
                     role=message['role'],
-                    parts=[glm.Part({"text": message['content']})
-                           ]
+                    parts=[glm.Part({"text": message['content']})]
                 )
 
             messages.append(convert_message)
@@ -234,7 +242,8 @@ async def chat_completion(request: Request):
             ge.Cancelled,
             ge.Conflict,
             ge.DataLoss,
-            ge.DuplicateCredentialArgs) as e:
+            ge.DuplicateCredentialArgs,
+            ge.InternalServerError) as e:
         try:
             error_code = e.code
         except:

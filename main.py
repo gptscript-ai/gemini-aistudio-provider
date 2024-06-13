@@ -92,21 +92,23 @@ async def map_messages(req_messages: list) -> list[glm.Content] | None:
     log(req_messages)
 
     if req_messages is not None:
-#         system: str = """
-# Hi. I will explain how you should behave.
-# You are task oriented system.
-# You receive input from a user, process the input from the given instructions, and then output the result.
-# Your objective is to provide consistent and correct results, using tools where appropriate.
-# Do not call tools that you have not been given access to.
-# Make sure you provide only the correct inputs when calling tools.
-# You do not need to explain the steps taken, only provide the result to the given instructions.
-# You are referred to as a tool.
-# You don't move to the next step until you have a result.
-# """
-#         req_messages = [
-#                            {"role": "system", "content": system},
-#                            {"role": "model", "content": "Ok, let's start! Please continue in your native language."}
-#                        ] + req_messages
+        system: str = """
+You are a task oriented system.
+Be as brief as possible when answering the user.
+Only give the required answer.
+Do not give your thought process.
+Use functions or tools as needed to complete the tasks given to you.
+You are referred to as a tool.
+Do not call functions or tools unless you need to.
+Ensure you are passing the correct arguments to the functions or tools you call.
+Do not move on to the next task until the current task is completed.
+Do not make up arguments for tools.
+Call functions one at a time to make sure you have the correct inputs.
+"""
+        req_messages = [
+                           {"role": "system", "content": system},
+                           {"role": "model", "content": "Ok, let's start! Please continue in your native language."}
+                       ] + req_messages
 
         for message in req_messages:
             match message['role']:

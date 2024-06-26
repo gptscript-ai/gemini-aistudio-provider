@@ -1,6 +1,6 @@
 Name: Google Model Provider
 Description: Model provider for Google host models
 Model Provider: true
-credential: github.com/gptscript-ai/gemini-aistudio-provider/credential
+credential: github.com/gptscript-ai/credential as github.com/gptscript-ai/gemini-aistudio-provider/credential with "Please enter your Google AI Studio API Key" as message and token as field and "GEMINI_API_KEY" as env
 
 #!sys.daemon /usr/bin/env python3 ${GPTSCRIPT_TOOL_DIR}/main.py

@@ -361,6 +361,6 @@ if __name__ == "__main__":
 
     try:
         uvicorn.run("main:app", host="127.0.0.1", port=int(os.environ.get("PORT", "8000")),
-                log_level="debug" if debug else "critical", reload=debug, access_log=debug)
+                log_level="debug" if debug else "critical", access_log=debug)
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
